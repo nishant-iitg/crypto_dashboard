@@ -107,24 +107,73 @@ def fetch_market_data(crypto_id, days=30):
     return df
 
 def add_technical_indicators(df):
-    # Calculate Moving Averages
-    df['sma_20'] = SMAIndicator(close=df['close'], window=20).sma_indicator()
-    df['ema_50'] = EMAIndicator(close=df['close'], window=50).ema_indicator()
-    
-    # Calculate RSI
-    df['rsi'] = RSIIndicator(close=df['close'], window=14).rsi()
-    
-    # Calculate MACD
-    macd = MACD(close=df['close'])
-    df['macd'] = macd.macd()
-    df['macd_signal'] = macd.macd_signal()
-    df['macd_hist'] = macd.macd_diff()
-    
-    # Calculate Bollinger Bands
-    bb = BollingerBands(close=df['close'], window=20, window_dev=2)
-    df['bb_high'] = bb.bollinger_hband()
-    df['bb_mid'] = bb.bollinger_mavg()
-    df['bb_low'] = bb.bollinger_lband()
+    # Ensure we have enough data points
+    if len(df) < 50:  # We need at least 50 points for reliable indicators
+        return df
+        
+    try:
+        # Calculate Moving Averages
+        df['sma_20'] = SMAIndicator(close=df['close'], window=20, fillna=True).sma_indicator()
+        df['ema_50'] = EMAIndicator(close=df['close'], window=50, fillna=True).ema_indicator()
+        
+        # Calculate RSI with more robust error handling
+        rsi_indicator = RSIIndicator(close=df['close'], window=14, fillna=True)
+        df['rsi'] = rsi_indicator.rsi()
+        
+        # Calculate MACD with standard parameters (12, 26, 9)
+        macd = MACD(close=df['close'], window_slow=26, window_fast=12, window_sign=9, fillna=True)
+        df['macd'] = macd.macd()
+        df['macd_signal'] = macd.macd_signal()
+        df['macd_hist'] = macd.macd_diff()
+        
+        # Calculate Bollinger Bands
+        bb = BollingerBands(close=df['close'], window=20, window_dev=2, fillna=True)
+        df['bb_high'] = bb.bollinger_hband()
+        df['bb_mid'] = bb.bollinger_mavg()
+        df['bb_low'] = bb.bollinger_lband()
+        
+        # Add additional technical indicators
+        
+        # 1. RSI Divergence
+        df['rsi_peak'] = df['rsi'].rolling(5, center=True).max() == df['rsi']
+        df['rsi_trough'] = df['rsi'].rolling(5, center=True).min() == df['rsi']
+        
+        # 2. MACD Signal Crossovers
+        df['macd_above_signal'] = df['macd'] > df['macd_signal']
+        df['macd_crossover'] = df['macd_above_signal'].ne(df['macd_above_signal'].shift())
+        
+        # 3. RSI with smoothed signal line
+        df['rsi_signal'] = df['rsi'].rolling(window=9).mean()
+        
+        # 4. Volume Weighted Moving Average (VWMA)
+        df['vwap'] = (df['volume'] * (df['high'] + df['low'] + df['close']) / 3).cumsum() / df['volume'].cumsum()
+        
+        # 5. Average True Range (ATR) for volatility
+        high_low = df['high'] - df['low']
+        high_close = (df['high'] - df['close'].shift()).abs()
+        low_close = (df['low'] - df['close'].shift()).abs()
+        ranges = pd.concat([high_low, high_close, low_close], axis=1)
+        true_range = ranges.max(axis=1)
+        df['atr'] = true_range.rolling(window=14).mean()
+        
+        # 6. Stochastic Oscillator
+        low_min = df['low'].rolling(window=14).min()
+        high_max = df['high'].rolling(window=14).max()
+        df['stoch_k'] = 100 * ((df['close'] - low_min) / (high_max - low_min))
+        df['stoch_d'] = df['stoch_k'].rolling(window=3).mean()
+        
+        # 7. On-Balance Volume (OBV)
+        df['obv'] = (np.sign(df['close'].diff()) * df['volume']).fillna(0).cumsum()
+        
+        # 8. Price Rate of Change (ROC)
+        df['roc'] = df['close'].pct_change(periods=9) * 100
+        
+        # Clean up any remaining NaN values
+        df = df.fillna(method='ffill').fillna(method='bfill')
+        
+    except Exception as e:
+        st.error(f"Error calculating technical indicators: {str(e)}")
+        return df
     
     return df
 
@@ -236,25 +285,87 @@ def plot_rsi_chart(df):
         x=df['date'],
         y=df['rsi'],
         name='RSI (14)',
-        line=dict(color='#9c27b0', width=2)
+        line=dict(color='#9c27b0', width=2),
+        hovertemplate='Date: %{x}<br>RSI: %{y:.2f}<extra></extra>'
     ))
     
-    # Add overbought/oversold levels
-    fig.add_hline(y=70, line_dash='dash', line_color='#f44336', 
-                 annotation_text='Overbought (70)', annotation_position='top right')
-    fig.add_hline(y=30, line_dash='dash', line_color='#4caf50',
-                 annotation_text='Oversold (30)', annotation_position='bottom right')
+    # Add RSI signal line if it exists
+    if 'rsi_signal' in df.columns:
+        fig.add_trace(go.Scatter(
+            x=df['date'],
+            y=df['rsi_signal'],
+            name='Signal (9)',
+            line=dict(color='#ff9800', width=1.5, dash='dash'),
+            hovertemplate='Signal: %{y:.2f}<extra></extra>'
+        ))
+    
+    # Add overbought/oversold levels with colored background
+    fig.add_hrect(y0=70, y1=100, line_width=0, 
+                 fillcolor='rgba(244, 67, 54, 0.1)', 
+                 annotation_text='Overbought', 
+                 annotation_position='top right')
+    
+    fig.add_hrect(y0=0, y1=30, line_width=0, 
+                 fillcolor='rgba(76, 175, 80, 0.1)',
+                 annotation_text='Oversold',
+                 annotation_position='bottom right')
+    
+    # Add center line
+    fig.add_hline(y=50, line_dash='dot', line_color='rgba(255, 255, 255, 0.5)',
+                 annotation_text='Neutral (50)', annotation_position='top left')
+    
+    # Add markers for divergences if they exist
+    if 'rsi_peak' in df.columns:
+        peaks = df[df['rsi_peak'] & (df['rsi'] > 70)]
+        troughs = df[df['rsi_trough'] & (df['rsi'] < 30)]
+        
+        fig.add_trace(go.Scatter(
+            x=peaks['date'],
+            y=peaks['rsi'],
+            mode='markers',
+            marker=dict(color='#f44336', size=8, symbol='triangle-down'),
+            name='Bearish Divergence',
+            hovertemplate='Potential Bearish Divergence<extra></extra>'
+        ))
+        
+        fig.add_trace(go.Scatter(
+            x=troughs['date'],
+            y=troughs['rsi'],
+            mode='markers',
+            marker=dict(color='#4caf50', size=8, symbol='triangle-up'),
+            name='Bullish Divergence',
+            hovertemplate='Potential Bullish Divergence<extra></extra>'
+        ))
     
     # Update layout
     fig.update_layout(
-        title='Relative Strength Index (RSI)',
+        title=dict(
+            text='<b>Relative Strength Index (RSI)</b>',
+            x=0.5,
+            xanchor='center',
+            font=dict(size=16)
+        ),
         xaxis_title='Date',
         yaxis_title='RSI',
         template='plotly_dark',
         showlegend=True,
-        height=300,
-        margin=dict(l=50, r=50, t=50, b=50),
-        yaxis_range=[0, 100]
+        height=350,
+        margin=dict(l=50, r=50, t=60, b=50),
+        yaxis=dict(range=[0, 100], fixedrange=True),
+        hovermode='x unified',
+        legend=dict(
+            orientation='h',
+            yanchor='bottom',
+            y=1.02,
+            xanchor='right',
+            x=1
+        )
+    )
+    
+    # Add custom hover info
+    fig.update_traces(
+        hovertemplate='<b>%{y:.2f}</b>',
+        selector=dict(type='scatter')
     )
     
     return fig
@@ -262,46 +373,118 @@ def plot_rsi_chart(df):
 def plot_macd_chart(df):
     fig = go.Figure()
     
+    # Calculate histogram colors based on direction and momentum
+    colors = []
+    for i in range(len(df)):
+        if i == 0:
+            colors.append('#4caf50' if df['macd_hist'].iloc[i] >= 0 else '#f44336')
+        else:
+            if df['macd_hist'].iloc[i] >= 0:
+                # Green for positive histogram
+                if df['macd_hist'].iloc[i] > df['macd_hist'].iloc[i-1]:
+                    colors.append('#2e7d32')  # Darker green for increasing
+                else:
+                    colors.append('#4caf50')  # Lighter green for decreasing
+            else:
+                # Red for negative histogram
+                if df['macd_hist'].iloc[i] < df['macd_hist'].iloc[i-1]:
+                    colors.append('#c62828')  # Darker red for decreasing
+                else:
+                    colors.append('#f44336')  # Lighter red for increasing
+    
+    # Histogram (added first to be in the background)
+    fig.add_trace(go.Bar(
+        x=df['date'],
+        y=df['macd_hist'],
+        name='Histogram',
+        marker_color=colors,
+        opacity=0.7,
+        showlegend=False,
+        hovertemplate='Hist: %{y:.4f}<extra></extra>'
+    ))
+    
     # MACD Line
     fig.add_trace(go.Scatter(
         x=df['date'],
         y=df['macd'],
-        name='MACD',
-        line=dict(color='#2196f3', width=2)
+        name='MACD (12,26,9)',
+        line=dict(color='#2196f3', width=2),
+        hovertemplate='MACD: %{y:.4f}<extra></extra>'
     ))
     
     # Signal Line
     fig.add_trace(go.Scatter(
         x=df['date'],
         y=df['macd_signal'],
-        name='Signal',
-        line=dict(color='#ff9800', width=2)
+        name='Signal Line',
+        line=dict(color='#ff9800', width=1.5, dash='dash'),
+        hovertemplate='Signal: %{y:.4f}<extra></extra>'
     ))
     
-    # Histogram
-    colors = ['#4caf50' if val >= 0 else '#f44336' for val in df['macd_hist']]
+    # Zero line with custom styling
+    fig.add_hline(
+        y=0, 
+        line=dict(width=1, dash='dash', color='#9e9e9e'),
+        annotation_text='Zero Line',
+        annotation_position='top right'
+    )
     
-    fig.add_trace(go.Bar(
-        x=df['date'],
-        y=df['macd_hist'],
-        name='Histogram',
-        marker_color=colors,
-        opacity=0.6,
-        showlegend=False
-    ))
-    
-    # Zero line
-    fig.add_hline(y=0, line_width=1, line_dash='dash', line_color='#9e9e9e')
+    # Add markers for crossovers if they exist
+    if 'macd_crossover' in df.columns and 'macd_above_signal' in df.columns:
+        crossovers = df[df['macd_crossover'] & (df.index > 0)]
+        
+        for idx, row in crossovers.iterrows():
+            if row['macd_above_signal']:
+                # Bullish crossover (MACD crosses above signal)
+                fig.add_vline(
+                    x=row['date'],
+                    line_width=1,
+                    line_dash='dot',
+                    line_color='#4caf50',
+                    opacity=0.7,
+                    annotation_text='Bullish',
+                    annotation_position='top left'
+                )
+            else:
+                # Bearish crossover (MACD crosses below signal)
+                fig.add_vline(
+                    x=row['date'],
+                    line_width=1,
+                    line_dash='dot',
+                    line_color='#f44336',
+                    opacity=0.7,
+                    annotation_text='Bearish',
+                    annotation_position='bottom left'
+                )
     
     # Update layout
     fig.update_layout(
-        title='MACD (Moving Average Convergence Divergence)',
+        title=dict(
+            text='<b>MACD (12, 26, 9)</b>',
+            x=0.5,
+            xanchor='center',
+            font=dict(size=16)
+        ),
         xaxis_title='Date',
-        yaxis_title='MACD',
+        yaxis_title='Value',
         template='plotly_dark',
         showlegend=True,
-        height=300,
-        margin=dict(l=50, r=50, t=50, b=50)
+        height=400,
+        margin=dict(l=50, r=50, t=60, b=50),
+        hovermode='x unified',
+        legend=dict(
+            orientation='h',
+            yanchor='bottom',
+            y=1.02,
+            xanchor='right',
+            x=1
+        )
+    )
+    
+    # Add custom hover info
+    fig.update_traces(
+        hovertemplate='<b>%{y:.4f}</b>',
+        selector=dict(type='scatter')
     )
     
     return fig
@@ -322,41 +505,73 @@ if df is not None and not df.empty:
     # Display Main Card with price and stats
     st.markdown('<div class="card">', unsafe_allow_html=True)
     
-    # Latest price and basic stats
-    latest_price = df.iloc[-1]["close"]
-    first_price = df.iloc[0]["close"]
-    pct_change = ((latest_price - first_price) / first_price) * 100
-    high_price = df["high"].max()
-    low_price = df["low"].min()
-    volume_24h = df["volume"].iloc[-1]
-    rsi = df["rsi"].iloc[-1]
-    
-    # Stats cards
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("Price (USD)", f"${latest_price:,.2f}")
-    with col2:
-        st.metric(f"{days}-day Change", f"{pct_change:+.2f}%", 
-                 delta=f"${(latest_price - first_price):,.2f}")
-    with col3:
-        st.metric("24h Volume", f"${volume_24h:,.0f}")
-    with col4:
-        st.metric("RSI (14)", f"{rsi:.2f}", 
-                 delta=None if not 30 <= rsi <= 70 else ("Oversold" if rsi < 30 else "Overbought"),
-                 delta_color="off")
+    try:
+        # Latest price and basic stats
+        latest_price = df.iloc[-1]["close"]
+        first_price = df.iloc[0]["close"]
+        pct_change = ((latest_price - first_price) / first_price) * 100
+        high_price = df["high"].max()
+        low_price = df["low"].min()
+        volume_24h = df["volume"].iloc[-1]
+        
+        # Initialize RSI with None
+        rsi_value = None
+        rsi_text = "N/A"
+        rsi_delta = None
+        rsi_delta_color = "off"
+        
+        # Check if RSI is available
+        if "rsi" in df.columns and not pd.isna(df["rsi"].iloc[-1]):
+            rsi_value = df["rsi"].iloc[-1]
+            rsi_text = f"{rsi_value:.2f}"
+            if rsi_value < 30:
+                rsi_delta = "Oversold"
+            elif rsi_value > 70:
+                rsi_delta = "Overbought"
+        
+        # Stats cards
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Price (USD)", f"${latest_price:,.2f}")
+        with col2:
+            st.metric(f"{days}-day Change", f"{pct_change:+.2f}%", 
+                     delta=f"${(latest_price - first_price):,.2f}")
+        with col3:
+            st.metric("24h Volume", f"${volume_24h:,.0f}")
+        with col4:
+            st.metric("RSI (14)", rsi_text, 
+                     delta=rsi_delta,
+                     delta_color=rsi_delta_color)
+    except Exception as e:
+        st.error(f"Error displaying price data: {str(e)}")
+        st.stop()
     
     # Tabs for different chart types
     tab1, tab2 = st.tabs(["📈 Price & Indicators", "📊 Technical Analysis"])
     
     with tab1:
-        # Candlestick chart with volume
-        st.plotly_chart(plot_candlestick_chart(df), use_container_width=True)
+        try:
+            # Candlestick chart with volume
+            st.plotly_chart(plot_candlestick_chart(df), use_container_width=True)
+        except Exception as e:
+            st.warning("Could not display candlestick chart. Showing line chart instead.")
+            st.line_chart(df.set_index('date')['close'])
         
     with tab2:
-        # Technical indicators in separate charts
-        st.plotly_chart(plot_volume_chart(df), use_container_width=True)
-        st.plotly_chart(plot_rsi_chart(df), use_container_width=True)
-        st.plotly_chart(plot_macd_chart(df), use_container_width=True)
+        try:
+            # Technical indicators in separate charts
+            if 'volume' in df.columns and len(df) > 0:
+                st.plotly_chart(plot_volume_chart(df), use_container_width=True)
+            
+            if 'rsi' in df.columns and len(df) > 0:
+                st.plotly_chart(plot_rsi_chart(df), use_container_width=True)
+            
+            if all(col in df.columns for col in ['macd', 'macd_signal', 'macd_hist']):
+                st.plotly_chart(plot_macd_chart(df), use_container_width=True)
+            
+        except Exception as e:
+            st.error(f"Error displaying technical indicators: {str(e)}")
+            st.warning("Some technical indicators could not be displayed. Please try a different time period or cryptocurrency.")
     
     st.markdown('</div>', unsafe_allow_html=True)
     
