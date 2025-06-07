@@ -152,47 +152,102 @@ cryptos = {
 selected_name = st.sidebar.selectbox("Cryptocurrency", list(cryptos.keys()))
 selected_id = cryptos[selected_name]
 
+def get_interval_for_timeframe(timeframe):
+    """Convert timeframe to CoinGecko API interval"""
+    if timeframe == '1m':
+        return 'minute', 'm1'
+    elif timeframe == '5m':
+        return 'minute', 'm5'
+    elif timeframe == '15m':
+        return 'minute', 'm15'
+    elif timeframe == '30m':
+        return 'minute', 'm30'
+    elif timeframe == '1h':
+        return 'hourly', 'h1'
+    elif timeframe == '4h':
+        return 'hourly', 'h4'
+    else:  # 1d and others
+        return 'daily', 'd1'
+
 # Data fetching function using CoinGecko API with OHLCV data
 @st.cache_data(ttl=300)
-def fetch_market_data(crypto_id, days=30):
-    # First get the price data
-    price_url = f"https://api.coingecko.com/api/v3/coins/{crypto_id}/market_chart?vs_currency=usd&days={days}&interval=daily"
-    response = requests.get(price_url)
+def fetch_market_data(crypto_id, days=30, timeframe='1d'):
+    # Determine the API parameters based on timeframe
+    interval, _ = get_interval_for_timeframe(timeframe)
+    
+    # For intraday data, we'll need to fetch more data and resample
+    if 'm' in timeframe or 'h' in timeframe:
+        # Add buffer days to ensure we have enough data points
+        days = max(days * 2, 30)  # At least 30 days of data for intraday
+    
+    # Get OHLC data
+    ohlc_url = f"https://api.coingecko.com/api/v3/coins/{crypto_id}/ohlc?vs_currency=usd&days={days}"
+    response = requests.get(ohlc_url)
     
     if response.status_code != 200:
-        st.error("Failed to fetch price data from API.")
+        st.error("Failed to fetch OHLC data from API.")
         return None
         
-    data = response.json()
-    prices = data.get("prices", [])
+    ohlc_data = response.json()
     
-    if not prices:
-        st.error("No price data found.")
+    if not ohlc_data:
+        st.error("No OHLC data found.")
         return None
     
     # Convert to DataFrame
-    df = pd.DataFrame(prices, columns=["timestamp", "price"])
+    df = pd.DataFrame(ohlc_data, columns=["timestamp", "open", "high", "low", "close"])
     df["date"] = pd.to_datetime(df["timestamp"], unit='ms')
-    df["date_only"] = df["date"].dt.date
     
-    # Get OHLC data (Open, High, Low, Close)
-    # For simplicity, we'll derive OHLC from the daily data
-    # In a production app, you might want to use a different endpoint or method
-    df = df.set_index('date')
+    # Get volume data
+    price_url = f"https://api.coingecko.com/api/v3/coins/{crypto_id}/market_chart?vs_currency=usd&days={days}&interval=daily"
+    vol_response = requests.get(price_url)
     
-    # Resample to daily data and calculate OHLC
-    df_ohlc = df['price'].resample('D').ohlc()
-    df_volume = df['price'].resample('D').count()  # Using count as a proxy for volume
+    if vol_response.status_code == 200:
+        vol_data = vol_response.json()
+        if 'total_volumes' in vol_data and vol_data['total_volumes']:
+            vol_df = pd.DataFrame(vol_data['total_volumes'], columns=["timestamp", "volume"])
+            vol_df["date"] = pd.to_datetime(vol_df["timestamp"], unit='ms')
+            vol_df = vol_df.set_index('date')
+            
+            # Resample volume to match OHLC data frequency
+            vol_df = vol_df.resample('D')['volume'].sum().reset_index()
+            
+            # Merge volume data with OHLC data
+            df = pd.merge_asof(df.sort_values('date'), 
+                              vol_df.sort_values('date'), 
+                              on='date', 
+                              direction='nearest')
     
-    # Combine the data
-    df = pd.concat([df_ohlc, df_volume], axis=1)
-    df.columns = ['open', 'high', 'low', 'close', 'volume']
-    df = df.dropna()
-    df = df.reset_index()
+    # Handle missing volume data
+    if 'volume' not in df.columns:
+        df['volume'] = (df['high'] + df['low'] + df['close']) / 3  # Use typical price as volume proxy
+    
+    # Resample based on timeframe
+    if timeframe != '1d':
+        df = df.set_index('date')
+        if timeframe in ['1m', '5m', '15m', '30m']:
+            # For intraday, we need to simulate the data as CoinGecko doesn't provide minute data directly
+            # This is a simplified approach - in production, consider using a different API
+            df = df.resample(timeframe).agg({
+                'open': 'first',
+                'high': 'max',
+                'low': 'min',
+                'close': 'last',
+                'volume': 'sum'
+            })
+        df = df.reset_index()
+    
+    # Calculate additional metrics
     df['date_only'] = df['date'].dt.date
-    
-    # Sort by date to ensure correct order
     df = df.sort_values('date')
+    
+    # Calculate price changes
+    df['price_change'] = df['close'].pct_change() * 100
+    df['price_change_abs'] = df['close'].diff()
+    
+    # Calculate typical price and money flow
+    df['typical_price'] = (df['high'] + df['low'] + df['close']) / 3
+    df['money_flow'] = df['typical_price'] * df['volume']
     
     # Calculate technical indicators
     df = add_technical_indicators(df)
@@ -591,20 +646,26 @@ def plot_macd_chart(df):
     
     return fig
 
-# Add time period selector in sidebar
-# Time period selector in sidebar
-st.sidebar.header("Time Period")
+# Sidebar selectors
 time_period = st.sidebar.select_slider(
     "Select Time Range",
-    options=[7, 14, 30, 60, 90],
-    value=30,  # Default to 30 days
+    options=[7, 14, 30, 60, 90, 180, 365],
+    value=30,
     format_func=lambda x: f"{x} days"
 )
 days = time_period  # Use the selected number of days
 
+# Timeframe selector
+timeframe = st.sidebar.selectbox(
+    "Select Timeframe",
+    options=["1d", "4h", "1h", "15m"],
+    index=0,
+    help="Select the timeframe for the price data (1d = daily, 4h = 4 hours, 1h = 1 hour, 15m = 15 minutes)"
+)
+
 # Fetch market data with loading spinner
-with st.spinner(f"Loading {selected_name} market data for {time_period}..."):
-    df = fetch_market_data(selected_id, days)
+with st.spinner(f"Loading {selected_name} market data for {time_period} days ({timeframe} timeframe)..."):
+    df = fetch_market_data(selected_id, days=days, timeframe=timeframe)
 
 if df is not None and not df.empty:
     # Display Main Card with price and stats
@@ -711,8 +772,8 @@ if df is not None and not df.empty:
         st.error(f"Error displaying price data: {str(e)}")
         st.stop()
     
-        # Create tabs for different views
-    tab1, tab2, tab3 = st.tabs(["📊 Overview", "📈 Technical Analysis", "📋 Raw Data"])
+    # Create tabs for different views
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 Overview", "📈 Technical Analysis", "📊 OHLC Details", "📋 Raw Data"])
     
     with tab1:
         # Overview tab with main chart and key metrics
@@ -800,6 +861,120 @@ if df is not None and not df.empty:
                 st.warning("Some technical indicators could not be displayed. Please try a different time period or cryptocurrency.")
     
     with tab3:
+        # OHLC Details tab
+        st.markdown("### OHLC Price Details")
+        
+        # Show OHLC metrics for the latest data point
+        if not df.empty:
+            latest = df.iloc[-1]
+            prev = df.iloc[-2] if len(df) > 1 else latest
+            
+            # Create metrics row
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                delta_open = (latest['open'] - prev['open']) / prev['open'] * 100
+                st.metric("Open", f"${latest['open']:,.2f}", 
+                         f"{delta_open:+.2f}%" if len(df) > 1 else None)
+            
+            with col2:
+                st.metric("High", f"${latest['high']:,.2f}")
+            
+            with col3:
+                st.metric("Low", f"${latest['low']:,.2f}")
+            
+            with col4:
+                delta_close = (latest['close'] - prev['close']) / prev['close'] * 100
+                st.metric("Close", f"${latest['close']:,.2f}", 
+                         f"{delta_close:+.2f}%" if len(df) > 1 else None)
+            
+            # Show OHLC chart
+            fig_ohlc = go.Figure()
+            
+            # Candlestick
+            fig_ohlc.add_trace(go.Candlestick(
+                x=df['date'],
+                open=df['open'],
+                high=df['high'],
+                low=df['low'],
+                close=df['close'],
+                name='OHLC',
+                increasing_line_color='#26a69a',
+                decreasing_line_color='#ef5350'
+            ))
+            
+            # Update layout
+            fig_ohlc.update_layout(
+                title=f"{selected_name} OHLC Chart ({timeframe} timeframe)",
+                xaxis_title="Date",
+                yaxis_title="Price (USD)",
+                template='plotly_dark',
+                showlegend=False,
+                height=500,
+                margin=dict(l=50, r=50, t=50, b=50),
+                xaxis_rangeslider_visible=False
+            )
+            
+            st.plotly_chart(fig_ohlc, use_container_width=True)
+            
+            # Show volume chart
+            st.markdown("### Volume Analysis")
+            
+            # Calculate volume metrics
+            avg_volume = df['volume'].mean()
+            latest_volume = latest['volume']
+            volume_change = (latest_volume - avg_volume) / avg_volume * 100
+            
+            # Create volume metrics
+            vol_col1, vol_col2, vol_col3 = st.columns(3)
+            
+            with vol_col1:
+                st.metric("24h Volume", f"${latest_volume:,.0f}", 
+                         f"{volume_change:+.1f}% vs avg")
+            
+            with vol_col2:
+                st.metric("Volume Avg", f"${avg_volume:,.0f}")
+            
+            with vol_col3:
+                vol_trend = "📈" if latest_volume > avg_volume else "📉"
+                st.metric("Volume Trend", vol_trend)
+            
+            # Volume chart with price-based coloring
+            fig_vol = go.Figure()
+            
+            # Add volume bars with color based on price movement
+            colors = ['#26a69a' if close >= open_ else '#ef5350' 
+                     for close, open_ in zip(df['close'], df['open'])]
+            
+            fig_vol.add_trace(go.Bar(
+                x=df['date'],
+                y=df['volume'],
+                name='Volume',
+                marker_color=colors,
+                opacity=0.7,
+                hovertemplate='Date: %{x}<br>Volume: %{y:,.0f}<extra></extra>'
+            ))
+            
+            # Add average volume line
+            fig_vol.add_hline(y=avg_volume, line_dash='dash', 
+                            line_color='#9e9e9e',
+                            annotation_text=f'Avg: ${avg_volume:,.0f}',
+                            annotation_position='top right')
+            
+            # Update layout
+            fig_vol.update_layout(
+                title="Trading Volume with Price-based Coloring",
+                xaxis_title="Date",
+                yaxis_title="Volume",
+                template='plotly_dark',
+                showlegend=False,
+                height=400,
+                margin=dict(l=50, r=50, t=50, b=50)
+            )
+            
+            st.plotly_chart(fig_vol, use_container_width=True)
+    
+    with tab4:
         # Raw Data tab with filtering options
         st.markdown("### Market Data")
         
@@ -820,7 +995,8 @@ if df is not None and not df.empty:
             min_value=min_ts,
             max_value=max_ts,
             value=(min_ts, max_ts),
-            format="YYYY/MM/DD"
+            format="YYYY/MM/DD",
+            key="date_slider_raw"  # Unique key for this slider
         )
         
         # Convert timestamps back to datetime
@@ -834,7 +1010,14 @@ if df is not None and not df.empty:
         st.dataframe(
             filtered_df.drop(columns=['date_only']).set_index('date').sort_index(ascending=False),
             use_container_width=True,
-            height=500
+            height=500,
+            column_config={
+                'open': st.column_config.NumberColumn(format='$%.2f'),
+                'high': st.column_config.NumberColumn(format='$%.2f'),
+                'low': st.column_config.NumberColumn(format='$%.2f'),
+                'close': st.column_config.NumberColumn(format='$%.2f'),
+                'volume': st.column_config.NumberColumn(format='%.2f')
+            }
         )
         
         # Download button
