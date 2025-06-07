@@ -490,12 +490,15 @@ def plot_macd_chart(df):
     return fig
 
 # Add time period selector in sidebar
+# Time period selector in sidebar
 st.sidebar.header("Time Period")
-time_period = st.sidebar.selectbox("Select Time Period", 
-                                 ["7 days", "14 days", "30 days", "60 days", "90 days"],
-                                 index=2)  # Default to 30 days
-
-days = int(time_period.split()[0])  # Extract number of days
+time_period = st.sidebar.select_slider(
+    "Select Time Range",
+    options=[7, 14, 30, 60, 90],
+    value=30,  # Default to 30 days
+    format_func=lambda x: f"{x} days"
+)
+days = time_period  # Use the selected number of days
 
 # Fetch market data with loading spinner
 with st.spinner(f"Loading {selected_name} market data for {time_period}..."):
@@ -509,39 +512,99 @@ if df is not None and not df.empty:
         # Latest price and basic stats
         latest_price = df.iloc[-1]["close"]
         first_price = df.iloc[0]["close"]
-        pct_change = ((latest_price - first_price) / first_price) * 100
+        price_change = latest_price - first_price
+        pct_change = (price_change / first_price) * 100
+        
+        # Calculate 24h price change if we have enough data
+        if len(df) >= 2:
+            price_24h_ago = df.iloc[-2]["close"]
+            price_change_24h = latest_price - price_24h_ago
+            pct_change_24h = (price_change_24h / price_24h_ago) * 100
+        
+        # Get high and low for the selected period
         high_price = df["high"].max()
         low_price = df["low"].min()
-        volume_24h = df["volume"].iloc[-1]
         
-        # Initialize RSI with None
-        rsi_value = None
-        rsi_text = "N/A"
-        rsi_delta = None
-        rsi_delta_color = "off"
+        # Calculate 24h volume (or use latest available)
+        volume_24h = df["volume"].iloc[-1] if len(df) > 0 else 0
+        avg_volume = df["volume"].mean() if len(df) > 0 else 0
         
-        # Check if RSI is available
-        if "rsi" in df.columns and not pd.isna(df["rsi"].iloc[-1]):
-            rsi_value = df["rsi"].iloc[-1]
-            rsi_text = f"{rsi_value:.2f}"
-            if rsi_value < 30:
-                rsi_delta = "Oversold"
-            elif rsi_value > 70:
-                rsi_delta = "Overbought"
+        # Prepare RSI data
+        rsi_value = df["rsi"].iloc[-1] if "rsi" in df.columns and len(df) > 0 else None
         
-        # Stats cards
+        # Create metrics in a more organized way
         col1, col2, col3, col4 = st.columns(4)
+        
+        # Current Price Card
         with col1:
-            st.metric("Price (USD)", f"${latest_price:,.2f}")
+            st.metric(
+                label="Current Price",
+                value=f"${latest_price:,.2f}",
+                delta=f"${price_change_24h:+.2f} ({pct_change_24h:+.2f}%)" if len(df) >= 2 else None,
+                delta_color="normal"
+            )
+            st.caption(f"High: ${high_price:,.2f} | Low: ${low_price:,.2f}")
+        
+        # Price Change Card
         with col2:
-            st.metric(f"{days}-day Change", f"{pct_change:+.2f}%", 
-                     delta=f"${(latest_price - first_price):,.2f}")
+            st.metric(
+                label=f"{days}-Day Performance",
+                value=f"{pct_change:+.2f}%",
+                delta=f"${price_change:+,.2f}",
+                delta_color="normal"
+            )
+            st.caption(f"From ${first_price:,.2f} to ${latest_price:,.2f}")
+        
+        # Volume Card
         with col3:
-            st.metric("24h Volume", f"${volume_24h:,.0f}")
+            volume_change = ((volume_24h - avg_volume) / avg_volume * 100) if avg_volume > 0 else 0
+            st.metric(
+                label="24h Trading Volume",
+                value=f"${volume_24h:,.0f}",
+                delta=f"{volume_change:+.1f}% vs avg" if avg_volume > 0 else None,
+                delta_color="normal"
+            )
+            st.caption(f"Avg: ${avg_volume:,.0f}" if avg_volume > 0 else "No volume data")
+        
+        # RSI Card with visual indicator
         with col4:
-            st.metric("RSI (14)", rsi_text, 
-                     delta=rsi_delta,
-                     delta_color=rsi_delta_color)
+            if rsi_value is not None:
+                # Calculate RSI progress
+                rsi_progress = min(max((rsi_value - 20) / 60, 0), 1)  # Normalize to 0-1 (20-80 range)
+                
+                # Determine RSI status and color
+                if rsi_value < 30:
+                    status = "Oversold"
+                    color = "#4caf50"  # Green
+                elif rsi_value > 70:
+                    status = "Overbought"
+                    color = "#f44336"  # Red
+                else:
+                    status = "Neutral"
+                    color = "#ff9800"  # Orange
+                
+                # Create a visual indicator using HTML/CSS
+                st.markdown(
+                    f"""
+                    <div style="margin-bottom: 10px;">
+                        <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                            <span>RSI (14)</span>
+                            <span style="font-weight: bold; color: {color};">{rsi_value:.2f}</span>
+                        </div>
+                        <div style="background: #2d2d2d; height: 8px; border-radius: 4px; overflow: hidden;">
+                            <div style="width: {rsi_value}%; height: 100%; background: {color};"></div>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; font-size: 0.8em; color: #aaa; margin-top: 2px;">
+                            <span>30</span>
+                            <span>{status}</span>
+                            <span>70</span>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+            else:
+                st.metric("RSI (14)", "N/A")
     except Exception as e:
         st.error(f"Error displaying price data: {str(e)}")
         st.stop()
