@@ -11,36 +11,129 @@ from ta.volatility import BollingerBands
 # Constants
 DAYS_TO_FETCH = 30  # Increased from 7 to 30 for better technical analysis
 
-st.set_page_config(page_title="Crypto Price Tracker", layout="centered")
+# Page configuration with wide layout and dark theme
+st.set_page_config(
+    page_title="Crypto Dashboard",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# -- CSS for subtle card style and spacing --
-st.markdown(
-    """
+# Custom CSS for dark theme and improved UI
+st.markdown("""
     <style>
+    /* Main container */
+    .main .block-container {
+        padding: 2rem 2.5rem;
+        max-width: 1800px;
+    }
+    
+    /* Cards */
     .card {
-        background: #ffffff;
+        background: #1e1e1e;
         padding: 1.5rem;
         border-radius: 12px;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+        border: 1px solid #333;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
         margin-bottom: 1.5rem;
     }
+    
+    /* Headers */
     .header-text {
         font-weight: 700;
-        font-size: 48px;
+        font-size: 2.5rem;
         margin-bottom: 0.2rem;
-        color: #111827;
+        color: #f0f2f6;
         font-family: 'Inter', sans-serif;
     }
+    
     .subheader-text {
         font-weight: 400;
-        font-size: 18px;
-        color: #6b7280;
+        font-size: 1.1rem;
+        color: #9aa5b9;
         margin-bottom: 2rem;
         font-family: 'Inter', sans-serif;
     }
+    
+    /* Tabs */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+        padding: 0 4px;
+    }
+    
+    .stTabs [data-baseweb="tab"] {
+        height: 40px;
+        padding: 0 20px;
+        border-radius: 8px;
+        align-items: center;
+        transition: all 0.2s ease;
+    }
+    
+    .stTabs [data-baseweb="tab"]:hover {
+        background: #2a2a2a;
+    }
+    
+    .stTabs [aria-selected="true"] {
+        background: #3a3a3a;
+        color: #f0f2f6;
+        font-weight: 600;
+    }
+    
+    /* Metrics */
+    .stMetric {
+        background: #252525;
+        border-radius: 8px;
+        padding: 1rem;
+        border-left: 4px solid #4f46e5;
+    }
+    
+    .stMetric > div > div {
+        color: #f0f2f6 !important;
+    }
+    
+    /* Dataframe styling */
+    .stDataFrame {
+        border-radius: 8px;
+        overflow: hidden;
+    }
+    
+    /* Loading spinner */
+    .stSpinner > div > div {
+        border-color: #4f46e5 transparent #4f46e5 transparent !important;
+    }
+    
+    /* Sidebar */
+    .css-1d391kg {
+        background-color: #1a1a1a;
+        border-right: 1px solid #333;
+    }
+    
+    /* Tooltips */
+    .stTooltip {
+        font-family: 'Inter', sans-serif;
+    }
+    
+    /* Scrollbar */
+    ::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+    }
+    
+    ::-webkit-scrollbar-track {
+        background: #1e1e1e;
+    }
+    
+    ::-webkit-scrollbar-thumb {
+        background: #4f46e5;
+        border-radius: 4px;
+    }
+    
+    ::-webkit-scrollbar-thumb:hover {
+        background: #4338ca;
+    }
     </style>
     """,
-    unsafe_allow_html=True,
+    unsafe_allow_html=True
 )
 
 # Hero Section
@@ -110,69 +203,78 @@ def add_technical_indicators(df):
     # Ensure we have enough data points
     if len(df) < 50:  # We need at least 50 points for reliable indicators
         return df
-        
+    
+    # Create a copy to avoid SettingWithCopyWarning
+    df = df.copy()
+    
     try:
-        # Calculate Moving Averages
-        df['sma_20'] = SMAIndicator(close=df['close'], window=20, fillna=True).sma_indicator()
-        df['ema_50'] = EMAIndicator(close=df['close'], window=50, fillna=True).ema_indicator()
+        # Ensure we're working with numeric data only
+        numeric_df = df.select_dtypes(include=[np.number])
         
-        # Calculate RSI with more robust error handling
-        rsi_indicator = RSIIndicator(close=df['close'], window=14, fillna=True)
-        df['rsi'] = rsi_indicator.rsi()
+        # Calculate indicators
+        if len(numeric_df) >= 20:
+            df['sma_20'] = SMAIndicator(close=df['close'], window=20, fillna=True).sma_indicator()
         
-        # Calculate MACD with standard parameters (12, 26, 9)
-        macd = MACD(close=df['close'], window_slow=26, window_fast=12, window_sign=9, fillna=True)
-        df['macd'] = macd.macd()
-        df['macd_signal'] = macd.macd_signal()
-        df['macd_hist'] = macd.macd_diff()
+        if len(numeric_df) >= 50:
+            df['ema_50'] = EMAIndicator(close=df['close'], window=50, fillna=True).ema_indicator()
         
-        # Calculate Bollinger Bands
-        bb = BollingerBands(close=df['close'], window=20, window_dev=2, fillna=True)
-        df['bb_high'] = bb.bollinger_hband()
-        df['bb_mid'] = bb.bollinger_mavg()
-        df['bb_low'] = bb.bollinger_lband()
+        # RSI with minimum data check
+        if len(numeric_df) >= 14:
+            df['rsi'] = RSIIndicator(close=df['close'], window=14, fillna=True).rsi()
+            df['rsi_peak'] = df['rsi'].rolling(5, center=True).max() == df['rsi']
+            df['rsi_trough'] = df['rsi'].rolling(5, center=True).min() == df['rsi']
+            df['rsi_signal'] = df['rsi'].rolling(window=9).mean()
         
-        # Add additional technical indicators
+        # MACD with minimum data check
+        if len(numeric_df) >= 26:
+            macd = MACD(close=df['close'], window_slow=26, window_fast=12, window_sign=9, fillna=True)
+            df['macd'] = macd.macd()
+            df['macd_signal'] = macd.macd_signal()
+            df['macd_hist'] = macd.macd_diff()
+            df['macd_above_signal'] = df['macd'] > df['macd_signal']
+            df['macd_crossover'] = df['macd_above_signal'].ne(df['macd_above_signal'].shift())
         
-        # 1. RSI Divergence
-        df['rsi_peak'] = df['rsi'].rolling(5, center=True).max() == df['rsi']
-        df['rsi_trough'] = df['rsi'].rolling(5, center=True).min() == df['rsi']
+        # Bollinger Bands
+        if len(numeric_df) >= 20:
+            bb = BollingerBands(close=df['close'], window=20, window_dev=2, fillna=True)
+            df['bb_high'] = bb.bollinger_hband()
+            df['bb_mid'] = bb.bollinger_mavg()
+            df['bb_low'] = bb.bollinger_lband()
         
-        # 2. MACD Signal Crossovers
-        df['macd_above_signal'] = df['macd'] > df['macd_signal']
-        df['macd_crossover'] = df['macd_above_signal'].ne(df['macd_above_signal'].shift())
+        # Volume Weighted Average Price
+        if 'volume' in df.columns and 'high' in df.columns and 'low' in df.columns and 'close' in df.columns:
+            df['vwap'] = (df['volume'] * (df['high'] + df['low'] + df['close']) / 3).cumsum() / df['volume'].cumsum()
         
-        # 3. RSI with smoothed signal line
-        df['rsi_signal'] = df['rsi'].rolling(window=9).mean()
+        # Average True Range
+        if len(numeric_df) >= 15:  # Need at least 14 periods + 1 for shift
+            high_low = df['high'] - df['low']
+            high_close = (df['high'] - df['close'].shift()).abs()
+            low_close = (df['low'] - df['close'].shift()).abs()
+            ranges = pd.concat([high_low, high_close, low_close], axis=1)
+            true_range = ranges.max(axis=1)
+            df['atr'] = true_range.rolling(window=14).mean()
         
-        # 4. Volume Weighted Moving Average (VWMA)
-        df['vwap'] = (df['volume'] * (df['high'] + df['low'] + df['close']) / 3).cumsum() / df['volume'].cumsum()
+        # Stochastic Oscillator
+        if len(numeric_df) >= 14:
+            low_min = df['low'].rolling(window=14).min()
+            high_max = df['high'].rolling(window=14).max()
+            df['stoch_k'] = 100 * ((df['close'] - low_min) / (high_max - low_min + 1e-10))  # Add small number to avoid division by zero
+            df['stoch_d'] = df['stoch_k'].rolling(window=3).mean()
         
-        # 5. Average True Range (ATR) for volatility
-        high_low = df['high'] - df['low']
-        high_close = (df['high'] - df['close'].shift()).abs()
-        low_close = (df['low'] - df['close'].shift()).abs()
-        ranges = pd.concat([high_low, high_close, low_close], axis=1)
-        true_range = ranges.max(axis=1)
-        df['atr'] = true_range.rolling(window=14).mean()
+        # On-Balance Volume
+        if 'volume' in df.columns and 'close' in df.columns:
+            df['obv'] = (np.sign(df['close'].diff()) * df['volume']).fillna(0).cumsum()
         
-        # 6. Stochastic Oscillator
-        low_min = df['low'].rolling(window=14).min()
-        high_max = df['high'].rolling(window=14).max()
-        df['stoch_k'] = 100 * ((df['close'] - low_min) / (high_max - low_min))
-        df['stoch_d'] = df['stoch_k'].rolling(window=3).mean()
+        # Rate of Change
+        if len(numeric_df) >= 10:  # Need at least 9 periods + 1 for pct_change
+            df['roc'] = df['close'].pct_change(periods=9) * 100
         
-        # 7. On-Balance Volume (OBV)
-        df['obv'] = (np.sign(df['close'].diff()) * df['volume']).fillna(0).cumsum()
-        
-        # 8. Price Rate of Change (ROC)
-        df['roc'] = df['close'].pct_change(periods=9) * 100
-        
-        # Clean up any remaining NaN values
-        df = df.fillna(method='ffill').fillna(method='bfill')
+        # Forward fill and backfill any remaining NaN values
+        df = df.ffill().bfill()
         
     except Exception as e:
         st.error(f"Error calculating technical indicators: {str(e)}")
+        # Return the original dataframe with any successfully calculated indicators
         return df
     
     return df
@@ -609,39 +711,142 @@ if df is not None and not df.empty:
         st.error(f"Error displaying price data: {str(e)}")
         st.stop()
     
-    # Tabs for different chart types
-    tab1, tab2 = st.tabs(["📈 Price & Indicators", "📊 Technical Analysis"])
+        # Create tabs for different views
+    tab1, tab2, tab3 = st.tabs(["📊 Overview", "📈 Technical Analysis", "📋 Raw Data"])
     
     with tab1:
-        try:
-            # Candlestick chart with volume
-            st.plotly_chart(plot_candlestick_chart(df), use_container_width=True)
-        except Exception as e:
-            st.warning("Could not display candlestick chart. Showing line chart instead.")
-            st.line_chart(df.set_index('date')['close'])
+        # Overview tab with main chart and key metrics
+        with st.container():
+            st.markdown("### Price Chart")
+            with st.spinner('Loading price chart...'):
+                try:
+                    st.plotly_chart(
+                        plot_candlestick_chart(df), 
+                        use_container_width=True,
+                        theme="streamlit"  # Use Streamlit's theme for consistency
+                    )
+                except Exception as e:
+                    st.warning("Could not display candlestick chart. Showing line chart instead.")
+                    st.line_chart(
+                        df.set_index('date')['close'],
+                        use_container_width=True
+                    )
         
+        # Additional metrics in a grid
+        st.markdown("### Market Overview")
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            with st.container():
+                st.metric("24h High/Low", 
+                         f"${df['high'].max():.2f} / ${df['low'].min():.2f}")
+        
+        with col2:
+            with st.container():
+                st.metric("24h Volume", 
+                         f"${df['volume'].iloc[-1]:,.0f}",
+                         f"{((df['volume'].iloc[-1] - df['volume'].mean()) / df['volume'].mean() * 100):+.1f}% vs avg" 
+                         if len(df) > 1 else None)
+        
+        with col3:
+            with st.container():
+                st.metric("Market Sentiment", 
+                         "Bullish" if df['close'].iloc[-1] > df['close'].iloc[0] else "Bearish",
+                         f"{len(df[df['close'] > df['close'].shift(1)]) / len(df) * 100:.1f}% up days" 
+                         if len(df) > 1 else None)
+    
     with tab2:
-        try:
-            # Technical indicators in separate charts
-            if 'volume' in df.columns and len(df) > 0:
-                st.plotly_chart(plot_volume_chart(df), use_container_width=True)
-            
-            if 'rsi' in df.columns and len(df) > 0:
-                st.plotly_chart(plot_rsi_chart(df), use_container_width=True)
-            
-            if all(col in df.columns for col in ['macd', 'macd_signal', 'macd_hist']):
-                st.plotly_chart(plot_macd_chart(df), use_container_width=True)
-            
-        except Exception as e:
-            st.error(f"Error displaying technical indicators: {str(e)}")
-            st.warning("Some technical indicators could not be displayed. Please try a different time period or cryptocurrency.")
+        # Technical Analysis tab with multiple indicators
+        st.markdown("### Technical Indicators")
+        
+        # Indicator selector
+        indicators = ["All Indicators", "RSI", "MACD", "Volume"]
+        selected_indicators = st.multiselect(
+            "Select indicators to display:",
+            options=indicators[1:],
+            default=indicators[1:],
+            key="indicator_selector"
+        )
+        
+        # Show selected indicators
+        with st.spinner('Loading technical indicators...'):
+            try:
+                if not selected_indicators or "All Indicators" in selected_indicators or "RSI" in selected_indicators:
+                    if 'rsi' in df.columns and len(df) > 0:
+                        st.plotly_chart(
+                            plot_rsi_chart(df), 
+                            use_container_width=True
+                        )
+                
+                if not selected_indicators or "All Indicators" in selected_indicators or "MACD" in selected_indicators:
+                    if all(col in df.columns for col in ['macd', 'macd_signal', 'macd_hist']):
+                        st.plotly_chart(
+                            plot_macd_chart(df), 
+                            use_container_width=True
+                        )
+                
+                if not selected_indicators or "All Indicators" in selected_indicators or "Volume" in selected_indicators:
+                    if 'volume' in df.columns and len(df) > 0:
+                        st.plotly_chart(
+                            plot_volume_chart(df), 
+                            use_container_width=True
+                        )
+                
+                if not selected_indicators:
+                    st.info("Select indicators to display from the dropdown above.")
+                
+            except Exception as e:
+                st.error(f"Error displaying technical indicators: {str(e)}")
+                st.warning("Some technical indicators could not be displayed. Please try a different time period or cryptocurrency.")
+    
+    with tab3:
+        # Raw Data tab with filtering options
+        st.markdown("### Market Data")
+        
+        # Ensure date column is in datetime format
+        df['date'] = pd.to_datetime(df['date'])
+        
+        # Get min and max dates
+        min_date = df['date'].min().to_pydatetime()
+        max_date = df['date'].max().to_pydatetime()
+        
+        # Convert dates to timestamps for the slider
+        min_ts = int(min_date.timestamp())
+        max_ts = int(max_date.timestamp())
+        
+        # Create date slider
+        selected_ts = st.slider(
+            "Select date range:",
+            min_value=min_ts,
+            max_value=max_ts,
+            value=(min_ts, max_ts),
+            format="YYYY/MM/DD"
+        )
+        
+        # Convert timestamps back to datetime
+        start_date = pd.to_datetime(selected_ts[0], unit='s')
+        end_date = pd.to_datetime(selected_ts[1], unit='s')
+        
+        # Filter data
+        filtered_df = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
+        
+        # Show data table with pagination
+        st.dataframe(
+            filtered_df.drop(columns=['date_only']).set_index('date').sort_index(ascending=False),
+            use_container_width=True,
+            height=500
+        )
+        
+        # Download button
+        csv = filtered_df.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="Download CSV",
+            data=csv,
+            file_name=f"crypto_data_{selected_name.lower().replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.csv",
+            mime='text/csv',
+        )
     
     st.markdown('</div>', unsafe_allow_html=True)
-    
-    # Add a collapsible section with raw data
-    with st.expander("View Raw Data"):
-        st.dataframe(df.drop(columns=['date_only']).set_index('date').sort_index(ascending=False), 
-                    use_container_width=True)
 else:
     st.warning("No data available to display.")
 
